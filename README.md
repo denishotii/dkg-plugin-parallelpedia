@@ -26,7 +26,7 @@ The plugin is already registered in the agent server. To use it:
 
 1. Build the plugin:
 ```bash
-cd packages/plugin-parallelpedia
+cd packages/dkg-plugin-parallelpedia
 npm install
 npm run build
 ```
