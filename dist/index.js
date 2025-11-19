@@ -352,7 +352,7 @@ var index_default = (0, import_plugins.defineDkgPlugin)((ctx, mcp, api) => {
             return res.status(404).json({
               topicId,
               found: false,
-              error: errorMessage.includes("500") ? "SPARQL query failed: Remote OT-Node returned 500 error. Remote testnet nodes may not support SPARQL queries immediately. Try retrieving the asset by UAL instead: GET /api/dkg/assets?ual=YOUR_UAL" : "SPARQL query failed. The data may not be indexed yet, or the query syntax may need adjustment."
+              error: errorMessage.includes("500") ? "" : "SPARQL query failed. The data may not be indexed yet, or the query syntax may need adjustment."
             });
           }
           if (!queryResult || !queryResult.data || queryResult.data.length === 0) {
