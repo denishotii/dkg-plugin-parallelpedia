@@ -3,6 +3,56 @@ import { openAPIRoute, z } from "@dkg/plugin-swagger";
 import { withSourceKnowledgeAssets } from "@dkg/plugin-dkg-essentials/utils";
 
 /**
+ * Validates that the DKG is configured to use a remote OT-Node, not localhost.
+ * This ensures community notes are queried from the remote DKG network.
+ * 
+ * @throws Error if localhost is detected or OT-Node URL is not configured
+ */
+function validateRemoteOtnode(): void {
+  const otnodeUrl = process.env.DKG_OTNODE_URL;
+  
+  if (!otnodeUrl) {
+    throw new Error(
+      "DKG_OTNODE_URL is not configured. " +
+      "Please set DKG_OTNODE_URL to a remote OT-Node (e.g., https://v6-pegasus-node-02.origin-trail.network:8900). " +
+      "Community notes must be queried from the remote DKG network, not a local node."
+    );
+  }
+  
+  // Check if it's localhost or 127.0.0.1
+  const urlLower = otnodeUrl.toLowerCase();
+  if (
+    urlLower.includes("localhost") ||
+    urlLower.includes("127.0.0.1") ||
+    urlLower.startsWith("http://localhost") ||
+    urlLower.startsWith("http://127.0.0.1")
+  ) {
+    throw new Error(
+      `DKG_OTNODE_URL is configured to use a local node (${otnodeUrl}). ` +
+      "Community notes must be queried from a remote OT-Node connected to the DKG network. " +
+      "Please set DKG_OTNODE_URL to a remote node, for example: " +
+      "https://v6-pegasus-node-02.origin-trail.network:8900"
+    );
+  }
+  
+  // Ensure it's a remote URL (starts with https:// or http:// and has a domain)
+  try {
+    const url = new URL(otnodeUrl);
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1") {
+      throw new Error(
+        `DKG_OTNODE_URL points to a local address (${url.hostname}). ` +
+        "Community notes must be queried from a remote OT-Node. " +
+        "Please set DKG_OTNODE_URL to a remote node, for example: " +
+        "https://v6-pegasus-node-02.origin-trail.network:8900"
+      );
+    }
+  } catch (urlError) {
+    // If URL parsing fails, it might be a malformed URL, but we already checked for localhost above
+    // So we'll let it pass if it doesn't contain localhost
+  }
+}
+
+/**
  * Parallelpedia Plugin
  * 
  * Provides MCP tools and API routes for:
@@ -30,6 +80,29 @@ export default defineDkgPlugin((ctx, mcp, api) => {
     },
     async ({ topicId }) => {
       try {
+        // Validate that we're using a remote OT-Node, not localhost
+        try {
+          validateRemoteOtnode();
+        } catch (validationError) {
+          const errorMessage = validationError instanceof Error ? validationError.message : String(validationError);
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    topicId,
+                    found: false,
+                    error: errorMessage,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        
         // Query DKG for Community Notes with this topic_id
         // Note: SPARQL query structure may need adjustment based on actual DKG data structure
         const query = `
@@ -40,11 +113,11 @@ export default defineDkgPlugin((ctx, mcp, api) => {
             ?asset a schema:CommunityNote .
             ?asset schema:topicId "${topicId}" .
             ?asset schema:trustScore ?trustScore .
-            ?asset schema:summary ?summary .
-            ?asset parallelpedia:grokTitle ?grokTitle .
-            ?asset parallelpedia:wikiTitle ?wikiTitle .
-            ?asset schema:dateCreated ?createdAt .
-            ?asset schema:identifier ?ual .
+            OPTIONAL { ?asset schema:summary ?summary . }
+            OPTIONAL { ?asset schema:grokTitle ?grokTitle . }
+            OPTIONAL { ?asset schema:wikiTitle ?wikiTitle . }
+            OPTIONAL { ?asset schema:dateCreated ?createdAt . }
+            OPTIONAL { ?asset schema:identifier ?ual . }
           }
           ORDER BY DESC(?createdAt)
           LIMIT 1
@@ -89,6 +162,7 @@ export default defineDkgPlugin((ctx, mcp, api) => {
 
         // Get full asset details if UAL is available
         let assetDetails = null;
+        
         if (ual) {
           try {
             assetDetails = await ctx.dkg.asset.get(ual, {
@@ -99,17 +173,8 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           }
         }
 
-        const response = {
-          topicId,
-          found: true,
-          trustScore: parseFloat(note.trustScore?.value || "0"),
-          summary: note.summary?.value || "",
-          grokTitle: note.grokTitle?.value || "",
-          wikiTitle: note.wikiTitle?.value || "",
-          createdAt: note.createdAt?.value || "",
-          ual: ual || null,
-          assetDetails: assetDetails || null,
-        };
+        // Return the raw asset data as-is
+        const response = assetDetails || note;
 
         return withSourceKnowledgeAssets(
           {
@@ -185,19 +250,43 @@ export default defineDkgPlugin((ctx, mcp, api) => {
     },
     async ({ keyword, minTrustScore, maxTrustScore, limit = 10 }) => {
       try {
+        // Validate that we're using a remote OT-Node, not localhost
+        try {
+          validateRemoteOtnode();
+        } catch (validationError) {
+          const errorMessage = validationError instanceof Error ? validationError.message : String(validationError);
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    found: false,
+                    count: 0,
+                    notes: [],
+                    error: errorMessage,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        
         let query = `
           PREFIX schema: <https://schema.org/>
           PREFIX parallelpedia: <https://parallelpedia.org/schema/>
           
           SELECT ?asset ?ual ?topicId ?trustScore ?summary ?grokTitle ?wikiTitle ?createdAt WHERE {
-            ?asset schema:@type "CommunityNote" .
+            ?asset a schema:CommunityNote .
             ?asset schema:topicId ?topicId .
             ?asset schema:trustScore ?trustScore .
-            ?asset schema:summary ?summary .
-            ?asset parallelpedia:grokTitle ?grokTitle .
-            ?asset parallelpedia:wikiTitle ?wikiTitle .
-            ?asset schema:dateCreated ?createdAt .
-            ?asset schema:identifier ?ual .
+            OPTIONAL { ?asset schema:summary ?summary . }
+            OPTIONAL { ?asset schema:grokTitle ?grokTitle . }
+            OPTIONAL { ?asset schema:wikiTitle ?wikiTitle . }
+            OPTIONAL { ?asset schema:dateCreated ?createdAt . }
+            OPTIONAL { ?asset schema:identifier ?ual . }
         `;
 
         if (keyword) {
@@ -273,15 +362,67 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           };
         }
 
-        const notes = queryResult.data.map((note: any) => ({
-          topicId: note.topicId?.value || "",
-          trustScore: parseFloat(note.trustScore?.value || "0"),
-          summary: note.summary?.value || "",
-          grokTitle: note.grokTitle?.value || "",
-          wikiTitle: note.wikiTitle?.value || "",
-          createdAt: note.createdAt?.value || "",
-          ual: note.ual?.value || note.asset?.value || null,
-        }));
+        // Log the raw query result to debug property extraction
+        console.log("[MCP Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
+
+        // Try to fetch full asset details for each result
+        const notesWithDetails = await Promise.all(
+          queryResult.data.map(async (note: any) => {
+            const ual = note.ual?.value || note.asset?.value || null;
+            
+            // Try to extract from SPARQL result first
+            let topicId = note.topicId?.value || "";
+            let trustScore = parseFloat(note.trustScore?.value || "0");
+            let summary = note.summary?.value || "";
+            let grokTitle = note.grokTitle?.value || "";
+            let wikiTitle = note.wikiTitle?.value || "";
+            let createdAt = note.createdAt?.value || "";
+            
+            // If SPARQL didn't return the values, try fetching the asset directly
+            if (!topicId && ual) {
+              try {
+                const assetDetails = await ctx.dkg.asset.get(ual, {
+                  includeMetadata: true,
+                });
+                
+                if (assetDetails) {
+                  const content = assetDetails.content || assetDetails.public || assetDetails;
+                  let jsonLd = content;
+                  if (typeof content === 'string') {
+                    try {
+                      jsonLd = JSON.parse(content);
+                    } catch (e) {
+                      // Not JSON, skip
+                    }
+                  }
+                  
+                  if (typeof jsonLd === 'object' && jsonLd !== null) {
+                    topicId = jsonLd.topicId || jsonLd['@id'] || topicId;
+                    trustScore = jsonLd.trustScore || trustScore;
+                    summary = jsonLd.summary || summary;
+                    grokTitle = jsonLd.grokTitle || grokTitle;
+                    wikiTitle = jsonLd.wikiTitle || wikiTitle;
+                    createdAt = jsonLd.dateCreated || jsonLd.createdAt || createdAt;
+                  }
+                }
+              } catch (assetErr) {
+                console.warn(`[MCP Search] Could not fetch asset details for ${ual}:`, assetErr);
+              }
+            }
+            
+            return {
+              topicId: topicId || "",
+              trustScore: trustScore || 0,
+              summary: summary || "",
+              grokTitle: grokTitle || "",
+              wikiTitle: wikiTitle || "",
+              createdAt: createdAt || "",
+              ual: ual,
+            };
+          })
+        );
+
+        const notes = notesWithDetails;
 
         return {
           content: [
@@ -358,19 +499,32 @@ export default defineDkgPlugin((ctx, mcp, api) => {
         const { topicId } = req.params;
 
         try {
+          // Validate that we're using a remote OT-Node, not localhost
+          try {
+            validateRemoteOtnode();
+          } catch (validationError) {
+            const errorMessage = validationError instanceof Error ? validationError.message : String(validationError);
+            console.error("[Community Note Query] Remote OT-Node validation failed:", errorMessage);
+            return res.status(400).json({
+              topicId,
+              found: false,
+              error: errorMessage,
+            });
+          }
+          
           const query = `
             PREFIX schema: <https://schema.org/>
             PREFIX parallelpedia: <https://parallelpedia.org/schema/>
             
             SELECT ?asset ?ual ?trustScore ?summary ?grokTitle ?wikiTitle ?createdAt WHERE {
-              ?asset schema:@type "CommunityNote" .
+              ?asset a schema:CommunityNote .
               ?asset schema:topicId "${topicId}" .
               ?asset schema:trustScore ?trustScore .
-              ?asset schema:summary ?summary .
-              ?asset parallelpedia:grokTitle ?grokTitle .
-              ?asset parallelpedia:wikiTitle ?wikiTitle .
-              ?asset schema:dateCreated ?createdAt .
-              ?asset schema:identifier ?ual .
+              OPTIONAL { ?asset schema:summary ?summary . }
+              OPTIONAL { ?asset schema:grokTitle ?grokTitle . }
+              OPTIONAL { ?asset schema:wikiTitle ?wikiTitle . }
+              OPTIONAL { ?asset schema:dateCreated ?createdAt . }
+              OPTIONAL { ?asset schema:identifier ?ual . }
             }
             ORDER BY DESC(?createdAt)
             LIMIT 1
@@ -426,16 +580,26 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           }
 
           const note = queryResult.data[0];
-          res.json({
-            topicId,
-            found: true,
-            trustScore: parseFloat(note.trustScore?.value || "0"),
-            summary: note.summary?.value || "",
-            grokTitle: note.grokTitle?.value || "",
-            wikiTitle: note.wikiTitle?.value || "",
-            createdAt: note.createdAt?.value || "",
-            ual: note.ual?.value || note.asset?.value || null,
-          });
+          const ual = note.ual?.value || note.asset?.value || null;
+          
+          // Fetch the raw asset data
+          if (ual) {
+            try {
+              const assetDetails = await ctx.dkg.asset.get(ual, {
+                includeMetadata: true,
+              });
+              
+              if (assetDetails) {
+                // Return the raw asset data as-is
+                return res.json(assetDetails);
+              }
+            } catch (assetErr) {
+              console.warn(`[Community Note Query] Could not fetch asset details for ${ual}:`, assetErr);
+            }
+          }
+          
+          // If we can't fetch the asset, return the SPARQL result as-is
+          res.json(note);
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({
@@ -499,19 +663,33 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           req.query;
 
         try {
+          // Validate that we're using a remote OT-Node, not localhost
+          try {
+            validateRemoteOtnode();
+          } catch (validationError) {
+            const errorMessage = validationError instanceof Error ? validationError.message : String(validationError);
+            console.error("[Community Note Search] Remote OT-Node validation failed:", errorMessage);
+            return res.status(400).json({
+              found: false,
+              count: 0,
+              notes: [],
+              error: errorMessage,
+            });
+          }
+          
           let query = `
             PREFIX schema: <https://schema.org/>
             PREFIX parallelpedia: <https://parallelpedia.org/schema/>
             
             SELECT ?asset ?ual ?topicId ?trustScore ?summary ?grokTitle ?wikiTitle ?createdAt WHERE {
-              ?asset schema:@type "CommunityNote" .
+              ?asset a schema:CommunityNote .
               ?asset schema:topicId ?topicId .
               ?asset schema:trustScore ?trustScore .
-              ?asset schema:summary ?summary .
-              ?asset parallelpedia:grokTitle ?grokTitle .
-              ?asset parallelpedia:wikiTitle ?wikiTitle .
-              ?asset schema:dateCreated ?createdAt .
-              ?asset schema:identifier ?ual .
+              OPTIONAL { ?asset schema:summary ?summary . }
+              OPTIONAL { ?asset schema:grokTitle ?grokTitle . }
+              OPTIONAL { ?asset schema:wikiTitle ?wikiTitle . }
+              OPTIONAL { ?asset schema:dateCreated ?createdAt . }
+              OPTIONAL { ?asset schema:identifier ?ual . }
           `;
 
           if (keyword) {
@@ -551,6 +729,37 @@ export default defineDkgPlugin((ctx, mcp, api) => {
               hasData: !!queryResult?.data,
               dataLength: queryResult?.data?.length || 0,
             });
+            
+            // If no results and no filters, try alternative query pattern
+            if ((!queryResult?.data || queryResult.data.length === 0) && !keyword && minTrustScore === undefined && maxTrustScore === undefined) {
+              console.log("[Community Note Search] No results with type query, trying alternative pattern...");
+              const altQuery = `
+                PREFIX schema: <https://schema.org/>
+                
+                SELECT ?asset ?ual ?topicId ?trustScore ?summary ?grokTitle ?wikiTitle ?createdAt WHERE {
+                  ?asset schema:trustScore ?trustScore .
+                  ?asset schema:topicId ?topicId .
+                  OPTIONAL { ?asset schema:summary ?summary . }
+                  OPTIONAL { ?asset schema:grokTitle ?grokTitle . }
+                  OPTIONAL { ?asset schema:wikiTitle ?wikiTitle . }
+                  OPTIONAL { ?asset schema:dateCreated ?createdAt . }
+                  OPTIONAL { ?asset schema:identifier ?ual . }
+                  FILTER (?trustScore >= 0 && ?trustScore <= 100)
+                }
+                ORDER BY DESC(?createdAt)
+                LIMIT ${limit}
+              `;
+              
+              try {
+                const altResult = await ctx.dkg.graph.query(altQuery, "SELECT");
+                if (altResult?.data && altResult.data.length > 0) {
+                  console.log(`[Community Note Search] Alternative query found ${altResult.data.length} results`);
+                  queryResult = altResult;
+                }
+              } catch (altErr) {
+                console.warn("[Community Note Search] Alternative query also failed:", altErr);
+              }
+            }
           } catch (queryError) {
             const errorMessage = queryError instanceof Error ? queryError.message : String(queryError);
             console.error("[Community Note Search] SPARQL query error:", queryError);
@@ -570,7 +779,7 @@ export default defineDkgPlugin((ctx, mcp, api) => {
               count: 0,
               notes: [],
               error: errorMessage.includes("500")
-                ? "SPARQL query failed: Remote OT-Node returned 500 error. Remote testnet nodes may not support SPARQL queries immediately."
+                ? ""
                 : "SPARQL query failed. The data may not be indexed yet.",
             });
           }
@@ -587,21 +796,39 @@ export default defineDkgPlugin((ctx, mcp, api) => {
             });
           }
 
-          const notes = queryResult.data.map((note: any) => ({
-            topicId: note.topicId?.value || "",
-            trustScore: parseFloat(note.trustScore?.value || "0"),
-            summary: note.summary?.value || "",
-            grokTitle: note.grokTitle?.value || "",
-            wikiTitle: note.wikiTitle?.value || "",
-            createdAt: note.createdAt?.value || "",
-            ual: note.ual?.value || note.asset?.value || null,
-          }));
+          // Log the raw query result to debug property extraction
+          console.log("[Community Note Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
 
-          res.json({
-            found: true,
-            count: notes.length,
-            notes,
-          });
+          // Fetch full asset details for each result to get the actual JSON-LD content
+          const notesWithDetails = await Promise.all(
+            queryResult.data.map(async (note: any) => {
+              const assetUri = note.asset?.value;
+              const ual = note.ual?.value || note.asset?.value || null;
+              
+              // Fetch the asset directly to get the raw JSON-LD content
+              if (ual) {
+                try {
+                  const assetDetails = await ctx.dkg.asset.get(ual, {
+                    includeMetadata: true,
+                  });
+                  
+                  if (assetDetails) {
+                    // Return the raw asset data as-is
+                    return assetDetails;
+                  }
+                } catch (assetErr) {
+                  console.warn(`[Community Note Search] Could not fetch asset details for ${ual}:`, assetErr);
+                }
+              }
+              
+              // If we can't fetch the asset, return the SPARQL result as-is
+              return note;
+            })
+          );
+
+          const notes = notesWithDetails;
+
+          res.json(notes);
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({
