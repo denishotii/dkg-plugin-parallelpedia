@@ -157,9 +157,47 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           };
         }
 
-        const note = queryResult.data[0];
-        const ual = note.ual?.value || note.asset?.value;
+        const note = queryResult.data?.[0];
+        if (!note) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    topicId,
+                    found: false,
+                    message: "No Community Note found for this topic.",
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        
+        // Helper function to extract clean value from SPARQL result
+        const extractValue = (value: any): string => {
+          if (!value) return "";
+          if (typeof value === 'string') {
+            // Remove quotes and type annotations (e.g., "value"^^type -> value)
+            let clean = value.replace(/^"|"$/g, '').replace(/\\"/g, '"');
+            // Remove type annotation if present
+            const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+            if (typeMatch && typeMatch[1]) {
+              clean = typeMatch[1].replace(/^"|"$/g, '');
+            }
+            return clean;
+          }
+          if (value.value) {
+            return extractValue(value.value);
+          }
+          return String(value);
+        };
 
+        const ual = note.ual?.value || note.ual || note.asset?.value || note.asset;
+        
         // Get full asset details if UAL is available
         let assetDetails = null;
         
@@ -173,8 +211,17 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           }
         }
 
-        // Return the raw asset data as-is
-        const response = assetDetails || note;
+        const response = {
+          topicId: extractValue(note.topicId) || topicId,
+          found: true,
+          trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+          summary: extractValue(note.summary),
+          grokTitle: extractValue(note.grokTitle),
+          wikiTitle: extractValue(note.wikiTitle),
+          createdAt: extractValue(note.createdAt),
+          ual: ual || null,
+          assetDetails: assetDetails || null,
+        };
 
         return withSourceKnowledgeAssets(
           {
@@ -362,67 +409,40 @@ export default defineDkgPlugin((ctx, mcp, api) => {
           };
         }
 
-        // Log the raw query result to debug property extraction
-        console.log("[MCP Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
-
-        // Try to fetch full asset details for each result
-        const notesWithDetails = await Promise.all(
-          queryResult.data.map(async (note: any) => {
-            const ual = note.ual?.value || note.asset?.value || null;
-            
-            // Try to extract from SPARQL result first
-            let topicId = note.topicId?.value || "";
-            let trustScore = parseFloat(note.trustScore?.value || "0");
-            let summary = note.summary?.value || "";
-            let grokTitle = note.grokTitle?.value || "";
-            let wikiTitle = note.wikiTitle?.value || "";
-            let createdAt = note.createdAt?.value || "";
-            
-            // If SPARQL didn't return the values, try fetching the asset directly
-            if (!topicId && ual) {
-              try {
-                const assetDetails = await ctx.dkg.asset.get(ual, {
-                  includeMetadata: true,
-                });
-                
-                if (assetDetails) {
-                  const content = assetDetails.content || assetDetails.public || assetDetails;
-                  let jsonLd = content;
-                  if (typeof content === 'string') {
-                    try {
-                      jsonLd = JSON.parse(content);
-                    } catch (e) {
-                      // Not JSON, skip
-                    }
-                  }
-                  
-                  if (typeof jsonLd === 'object' && jsonLd !== null) {
-                    topicId = jsonLd.topicId || jsonLd['@id'] || topicId;
-                    trustScore = jsonLd.trustScore || trustScore;
-                    summary = jsonLd.summary || summary;
-                    grokTitle = jsonLd.grokTitle || grokTitle;
-                    wikiTitle = jsonLd.wikiTitle || wikiTitle;
-                    createdAt = jsonLd.dateCreated || jsonLd.createdAt || createdAt;
-                  }
-                }
-              } catch (assetErr) {
-                console.warn(`[MCP Search] Could not fetch asset details for ${ual}:`, assetErr);
-              }
+        // Helper function to extract clean value from SPARQL result
+        const extractValue = (value: any): string => {
+          if (!value) return "";
+          if (typeof value === 'string') {
+            // Remove quotes and type annotations (e.g., "value"^^type -> value)
+            let clean = value.replace(/^"|"$/g, '').replace(/\\"/g, '"');
+            // Remove type annotation if present
+            const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+            if (typeMatch && typeMatch[1]) {
+              clean = typeMatch[1].replace(/^"|"$/g, '');
             }
-            
-            return {
-              topicId: topicId || "",
-              trustScore: trustScore || 0,
-              summary: summary || "",
-              grokTitle: grokTitle || "",
-              wikiTitle: wikiTitle || "",
-              createdAt: createdAt || "",
-              ual: ual,
-            };
-          })
-        );
+            return clean;
+          }
+          if (value.value) {
+            return extractValue(value.value);
+          }
+          return String(value);
+        };
 
-        const notes = notesWithDetails;
+        // Extract clean values from SPARQL results
+        const notes = queryResult.data.map((note: any) => {
+          const assetUri = note.asset?.value || note.asset;
+          const ual = note.ual?.value || note.ual || assetUri;
+          
+          return {
+            topicId: extractValue(note.topicId),
+            trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+            summary: extractValue(note.summary),
+            grokTitle: extractValue(note.grokTitle),
+            wikiTitle: extractValue(note.wikiTitle),
+            createdAt: extractValue(note.createdAt),
+            ual: ual || null,
+          };
+        });
 
         return {
           content: [
@@ -579,27 +599,58 @@ export default defineDkgPlugin((ctx, mcp, api) => {
             });
           }
 
-          const note = queryResult.data[0];
-          const ual = note.ual?.value || note.asset?.value || null;
+          const note = queryResult.data?.[0];
+        if (!note) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    topicId,
+                    found: false,
+                    message: "No Community Note found for this topic.",
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
           
-          // Fetch the raw asset data
-          if (ual) {
-            try {
-              const assetDetails = await ctx.dkg.asset.get(ual, {
-                includeMetadata: true,
-              });
-              
-              if (assetDetails) {
-                // Return the raw asset data as-is
-                return res.json(assetDetails);
+          // Helper function to extract clean value from SPARQL result
+          const extractValue = (value: any): string => {
+            if (!value) return "";
+            if (typeof value === 'string') {
+              // Remove quotes and type annotations (e.g., "value"^^type -> value)
+              let clean = value.replace(/^"|"$/g, '').replace(/\\"/g, '"');
+              // Remove type annotation if present
+              const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+              if (typeMatch && typeMatch[1]) {
+                clean = typeMatch[1].replace(/^"|"$/g, '');
               }
-            } catch (assetErr) {
-              console.warn(`[Community Note Query] Could not fetch asset details for ${ual}:`, assetErr);
+              return clean;
             }
-          }
+            if (value.value) {
+              return extractValue(value.value);
+            }
+            return String(value);
+          };
+
+          const assetUri = note.asset?.value || note.asset;
+          const ual = note.ual?.value || note.ual || assetUri;
           
-          // If we can't fetch the asset, return the SPARQL result as-is
-          res.json(note);
+          res.json({
+            topicId: extractValue(note.topicId) || topicId,
+            found: true,
+            trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+            summary: extractValue(note.summary),
+            grokTitle: extractValue(note.grokTitle),
+            wikiTitle: extractValue(note.wikiTitle),
+            createdAt: extractValue(note.createdAt),
+            ual: ual || null,
+          });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({
@@ -796,39 +847,47 @@ export default defineDkgPlugin((ctx, mcp, api) => {
             });
           }
 
-          // Log the raw query result to debug property extraction
-          console.log("[Community Note Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
-
-          // Fetch full asset details for each result to get the actual JSON-LD content
-          const notesWithDetails = await Promise.all(
-            queryResult.data.map(async (note: any) => {
-              const assetUri = note.asset?.value;
-              const ual = note.ual?.value || note.asset?.value || null;
-              
-              // Fetch the asset directly to get the raw JSON-LD content
-              if (ual) {
-                try {
-                  const assetDetails = await ctx.dkg.asset.get(ual, {
-                    includeMetadata: true,
-                  });
-                  
-                  if (assetDetails) {
-                    // Return the raw asset data as-is
-                    return assetDetails;
-                  }
-                } catch (assetErr) {
-                  console.warn(`[Community Note Search] Could not fetch asset details for ${ual}:`, assetErr);
-                }
+          // Helper function to extract clean value from SPARQL result
+          const extractValue = (value: any): string => {
+            if (!value) return "";
+            if (typeof value === 'string') {
+              // Remove quotes and type annotations (e.g., "value"^^type -> value)
+              let clean = value.replace(/^"|"$/g, '').replace(/\\"/g, '"');
+              // Remove type annotation if present
+              const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+              if (typeMatch && typeMatch[1]) {
+                clean = typeMatch[1].replace(/^"|"$/g, '');
               }
-              
-              // If we can't fetch the asset, return the SPARQL result as-is
-              return note;
-            })
-          );
+              return clean;
+            }
+            if (value.value) {
+              return extractValue(value.value);
+            }
+            return String(value);
+          };
 
-          const notes = notesWithDetails;
+          // Extract clean values from SPARQL results
+          const notes = queryResult.data.map((note: any) => {
+            const assetUri = note.asset?.value || note.asset;
+            const ual = note.ual?.value || note.ual || assetUri;
+            
+            return {
+              topicId: extractValue(note.topicId),
+              trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+              summary: extractValue(note.summary),
+              grokTitle: extractValue(note.grokTitle),
+              wikiTitle: extractValue(note.wikiTitle),
+              createdAt: extractValue(note.createdAt),
+              ual: ual || null,
+              asset: assetUri || null,
+            };
+          });
 
-          res.json(notes);
+          res.json({
+            found: true,
+            count: notes.length,
+            notes,
+          });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({

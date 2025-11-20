@@ -107,8 +107,41 @@ var index_default = defineDkgPlugin((ctx, mcp, api) => {
             ]
           };
         }
-        const note = queryResult.data[0];
-        const ual = note.ual?.value || note.asset?.value;
+        const note = queryResult.data?.[0];
+        if (!note) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    topicId,
+                    found: false,
+                    message: "No Community Note found for this topic."
+                  },
+                  null,
+                  2
+                )
+              }
+            ]
+          };
+        }
+        const extractValue = (value) => {
+          if (!value) return "";
+          if (typeof value === "string") {
+            let clean = value.replace(/^"|"$/g, "").replace(/\\"/g, '"');
+            const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+            if (typeMatch && typeMatch[1]) {
+              clean = typeMatch[1].replace(/^"|"$/g, "");
+            }
+            return clean;
+          }
+          if (value.value) {
+            return extractValue(value.value);
+          }
+          return String(value);
+        };
+        const ual = note.ual?.value || note.ual || note.asset?.value || note.asset;
         let assetDetails = null;
         if (ual) {
           try {
@@ -119,7 +152,17 @@ var index_default = defineDkgPlugin((ctx, mcp, api) => {
             console.warn("Could not fetch full asset details:", err);
           }
         }
-        const response = assetDetails || note;
+        const response = {
+          topicId: extractValue(note.topicId) || topicId,
+          found: true,
+          trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+          summary: extractValue(note.summary),
+          grokTitle: extractValue(note.grokTitle),
+          wikiTitle: extractValue(note.wikiTitle),
+          createdAt: extractValue(note.createdAt),
+          ual: ual || null,
+          assetDetails: assetDetails || null
+        };
         return withSourceKnowledgeAssets(
           {
             content: [
@@ -270,55 +313,34 @@ var index_default = defineDkgPlugin((ctx, mcp, api) => {
             ]
           };
         }
-        console.log("[MCP Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
-        const notesWithDetails = await Promise.all(
-          queryResult.data.map(async (note) => {
-            const ual = note.ual?.value || note.asset?.value || null;
-            let topicId = note.topicId?.value || "";
-            let trustScore = parseFloat(note.trustScore?.value || "0");
-            let summary = note.summary?.value || "";
-            let grokTitle = note.grokTitle?.value || "";
-            let wikiTitle = note.wikiTitle?.value || "";
-            let createdAt = note.createdAt?.value || "";
-            if (!topicId && ual) {
-              try {
-                const assetDetails = await ctx.dkg.asset.get(ual, {
-                  includeMetadata: true
-                });
-                if (assetDetails) {
-                  const content = assetDetails.content || assetDetails.public || assetDetails;
-                  let jsonLd = content;
-                  if (typeof content === "string") {
-                    try {
-                      jsonLd = JSON.parse(content);
-                    } catch (e) {
-                    }
-                  }
-                  if (typeof jsonLd === "object" && jsonLd !== null) {
-                    topicId = jsonLd.topicId || jsonLd["@id"] || topicId;
-                    trustScore = jsonLd.trustScore || trustScore;
-                    summary = jsonLd.summary || summary;
-                    grokTitle = jsonLd.grokTitle || grokTitle;
-                    wikiTitle = jsonLd.wikiTitle || wikiTitle;
-                    createdAt = jsonLd.dateCreated || jsonLd.createdAt || createdAt;
-                  }
-                }
-              } catch (assetErr) {
-                console.warn(`[MCP Search] Could not fetch asset details for ${ual}:`, assetErr);
-              }
+        const extractValue = (value) => {
+          if (!value) return "";
+          if (typeof value === "string") {
+            let clean = value.replace(/^"|"$/g, "").replace(/\\"/g, '"');
+            const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+            if (typeMatch && typeMatch[1]) {
+              clean = typeMatch[1].replace(/^"|"$/g, "");
             }
-            return {
-              topicId: topicId || "",
-              trustScore: trustScore || 0,
-              summary: summary || "",
-              grokTitle: grokTitle || "",
-              wikiTitle: wikiTitle || "",
-              createdAt: createdAt || "",
-              ual
-            };
-          })
-        );
-        const notes = notesWithDetails;
+            return clean;
+          }
+          if (value.value) {
+            return extractValue(value.value);
+          }
+          return String(value);
+        };
+        const notes = queryResult.data.map((note) => {
+          const assetUri = note.asset?.value || note.asset;
+          const ual = note.ual?.value || note.ual || assetUri;
+          return {
+            topicId: extractValue(note.topicId),
+            trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+            summary: extractValue(note.summary),
+            grokTitle: extractValue(note.grokTitle),
+            wikiTitle: extractValue(note.wikiTitle),
+            createdAt: extractValue(note.createdAt),
+            ual: ual || null
+          };
+        });
         return {
           content: [
             {
@@ -451,21 +473,52 @@ var index_default = defineDkgPlugin((ctx, mcp, api) => {
               found: false
             });
           }
-          const note = queryResult.data[0];
-          const ual = note.ual?.value || note.asset?.value || null;
-          if (ual) {
-            try {
-              const assetDetails = await ctx.dkg.asset.get(ual, {
-                includeMetadata: true
-              });
-              if (assetDetails) {
-                return res.json(assetDetails);
-              }
-            } catch (assetErr) {
-              console.warn(`[Community Note Query] Could not fetch asset details for ${ual}:`, assetErr);
-            }
+          const note = queryResult.data?.[0];
+          if (!note) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      topicId,
+                      found: false,
+                      message: "No Community Note found for this topic."
+                    },
+                    null,
+                    2
+                  )
+                }
+              ]
+            };
           }
-          res.json(note);
+          const extractValue = (value) => {
+            if (!value) return "";
+            if (typeof value === "string") {
+              let clean = value.replace(/^"|"$/g, "").replace(/\\"/g, '"');
+              const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+              if (typeMatch && typeMatch[1]) {
+                clean = typeMatch[1].replace(/^"|"$/g, "");
+              }
+              return clean;
+            }
+            if (value.value) {
+              return extractValue(value.value);
+            }
+            return String(value);
+          };
+          const assetUri = note.asset?.value || note.asset;
+          const ual = note.ual?.value || note.ual || assetUri;
+          res.json({
+            topicId: extractValue(note.topicId) || topicId,
+            found: true,
+            trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+            summary: extractValue(note.summary),
+            grokTitle: extractValue(note.grokTitle),
+            wikiTitle: extractValue(note.wikiTitle),
+            createdAt: extractValue(note.createdAt),
+            ual: ual || null
+          });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({
@@ -622,28 +675,40 @@ var index_default = defineDkgPlugin((ctx, mcp, api) => {
               notes: []
             });
           }
-          console.log("[Community Note Search] Raw query result sample:", JSON.stringify(queryResult.data[0], null, 2));
-          const notesWithDetails = await Promise.all(
-            queryResult.data.map(async (note) => {
-              const assetUri = note.asset?.value;
-              const ual = note.ual?.value || note.asset?.value || null;
-              if (ual) {
-                try {
-                  const assetDetails = await ctx.dkg.asset.get(ual, {
-                    includeMetadata: true
-                  });
-                  if (assetDetails) {
-                    return assetDetails;
-                  }
-                } catch (assetErr) {
-                  console.warn(`[Community Note Search] Could not fetch asset details for ${ual}:`, assetErr);
-                }
+          const extractValue = (value) => {
+            if (!value) return "";
+            if (typeof value === "string") {
+              let clean = value.replace(/^"|"$/g, "").replace(/\\"/g, '"');
+              const typeMatch = clean.match(/^(.+?)\^\^.+$/);
+              if (typeMatch && typeMatch[1]) {
+                clean = typeMatch[1].replace(/^"|"$/g, "");
               }
-              return note;
-            })
-          );
-          const notes = notesWithDetails;
-          res.json(notes);
+              return clean;
+            }
+            if (value.value) {
+              return extractValue(value.value);
+            }
+            return String(value);
+          };
+          const notes = queryResult.data.map((note) => {
+            const assetUri = note.asset?.value || note.asset;
+            const ual = note.ual?.value || note.ual || assetUri;
+            return {
+              topicId: extractValue(note.topicId),
+              trustScore: parseFloat(extractValue(note.trustScore)) || 0,
+              summary: extractValue(note.summary),
+              grokTitle: extractValue(note.grokTitle),
+              wikiTitle: extractValue(note.wikiTitle),
+              createdAt: extractValue(note.createdAt),
+              ual: ual || null,
+              asset: assetUri || null
+            };
+          });
+          res.json({
+            found: true,
+            count: notes.length,
+            notes
+          });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           res.status(500).json({
